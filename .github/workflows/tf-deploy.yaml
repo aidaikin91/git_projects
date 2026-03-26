@@ -2,9 +2,7 @@ name: Terraform Deploy (single root)
 
 on:
   push:
-    branches:
-      - feature/**
-      - main
+    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
@@ -104,22 +102,74 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
 
-      - name: Terraform Apply (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vars.outputs.destroy == 'false'
+      - name: Terraform Apply
+        if: steps.vars.outputs.destroy == 'false'
         run: terraform apply -auto-approve -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
 
       - name: Terraform Destroy (manual only)
         if: github.event_name == 'workflow_dispatch' && steps.vars.outputs.destroy == 'true'
         run: terraform destroy -auto-approve -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
 
-  monitoring:
+  fluxcd:
     runs-on: ubuntu-22.04
     needs: terraform
     environment: dev
 
     if: >
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
+      needs.terraform.outputs.destroy == 'false' &&
+      needs.terraform.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.IAM_ROLE }}
+          role-session-name: GitHubActionsSession
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@main
+
+      - name: Bootstrap Flux (install CRDs + controllers)
+        run: |
+          flux check --pre
+          flux install --components=source-controller,helm-controller,kustomize-controller
+
+      - name: Apply Flux manifests
+        run: |
+          kubectl apply -k ./roots/clusters/dev/
+
+      - name: Wait for Flux reconciliation
+        run: |
+          flux reconcile source git git-projects -n flux-system || true
+          flux reconcile kustomization karpenter -n flux-system || true
+          kubectl wait --for=condition=Ready kustomization/karpenter \
+            -n flux-system --timeout=300s || true
+
+      - name: Show Flux status
+        run: |
+          flux get all -n flux-system
+          kubectl get helmrelease -n karpenter || true
+          kubectl get pods -n karpenter || true
+
+  monitoring:
+    runs-on: ubuntu-22.04
+    needs: [terraform, fluxcd]
+    environment: dev
+
+    if: >
       needs.terraform.outputs.destroy == 'false' &&
       needs.terraform.result == 'success'
 
