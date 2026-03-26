@@ -12,7 +12,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: karpenter
-        namespace: flux-system
+        namespace: karpenter
   values:
     serviceAccount:
       create: true
