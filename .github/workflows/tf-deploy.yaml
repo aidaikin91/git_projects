@@ -1,0 +1,183 @@
+name: Terraform Deploy (single root)
+
+on:
+  push:
+    branches:
+      - feature/**
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "tfvars to use (dev/staging/production)"
+        required: true
+        default: "dev"
+      destroy:
+        description: "Run terraform destroy (true/false)"
+        required: true
+        default: "false"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: 1.6.6
+  TF_ROOT: ./roots/devops-project-main
+  STATE_BUCKET: 665832051028-projectx-tfstate
+  CLUSTER_NAME: projectx_cluster_ubuntu25b
+  MONITORING_NAMESPACE: monitoring
+
+jobs:
+  terraform:
+    runs-on: ubuntu-22.04
+    environment: dev
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.TF_ROOT }}
+
+    outputs:
+      env: ${{ steps.vars.outputs.env }}
+      destroy: ${{ steps.vars.outputs.destroy }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.IAM_ROLE }}
+          role-session-name: GitHubActionsSession
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify identity
+        run: aws sts get-caller-identity
+
+      - name: Debug caller and EKS token
+        run: |
+          echo "IAM_ROLE var = ${{ vars.IAM_ROLE }}"
+          aws sts get-caller-identity
+          aws eks get-token \
+            --cluster-name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Pick environment (push vs manual)
+        id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "env=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "destroy=${{ inputs.destroy }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "destroy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Terraform Init (remote state)
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+            -backend-config="key=projectx/devops-project-main/${{ steps.vars.outputs.env }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=060623762260-terraform-lock-dev"
+
+      - name: Debug state
+        run: |
+          pwd
+          terraform workspace show || true
+          terraform state list | grep aws_eks_cluster || true
+
+      - name: Terraform Format (recursive)
+        run: terraform fmt -recursive -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
+
+      - name: Terraform Apply (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vars.outputs.destroy == 'false'
+        run: terraform apply -auto-approve -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
+
+      - name: Terraform Destroy (manual only)
+        if: github.event_name == 'workflow_dispatch' && steps.vars.outputs.destroy == 'true'
+        run: terraform destroy -auto-approve -input=false -var-file=${{ steps.vars.outputs.env }}.tfvars
+
+  monitoring:
+    runs-on: ubuntu-22.04
+    needs: terraform
+    environment: dev
+
+    if: >
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.terraform.outputs.destroy == 'false' &&
+      needs.terraform.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.IAM_ROLE }}
+          role-session-name: GitHubActionsSession
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify identity
+        run: aws sts get-caller-identity
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Verify cluster access
+        run: |
+          kubectl config current-context
+          kubectl version --client
+          aws eks get-token \
+            --cluster-name "${{ env.CLUSTER_NAME }}" \
+            --region "${{ env.AWS_REGION }}" > /tmp/token.json
+          kubectl get ns
+
+      - name: Helm lint (charts)
+        run: |
+          helm lint ./eks-monitoring/charts/prometheus
+          helm lint ./eks-monitoring/charts/grafana
+
+      - name: Deploy Prometheus (Helm)
+        run: |
+          helm upgrade --install prometheus ./eks-monitoring/charts/prometheus \
+            -n "${{ env.MONITORING_NAMESPACE }}" \
+            --create-namespace
+
+      - name: Deploy Grafana (Helm)
+        run: |
+          helm upgrade --install grafana ./eks-monitoring/charts/grafana \
+            -n "${{ env.MONITORING_NAMESPACE }}" \
+            -f ./eks-monitoring/env/dev/grafana-values.yaml
+
+      - name: Show status
+        run: |
+          kubectl get pods -n "${{ env.MONITORING_NAMESPACE }}"
+          kubectl get svc -n "${{ env.MONITORING_NAMESPACE }}"
+          kubectl get ingress -n "${{ env.MONITORING_NAMESPACE }}" || true
+          helm list -n "${{ env.MONITORING_NAMESPACE }}"

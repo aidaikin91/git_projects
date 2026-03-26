@@ -1,0 +1,24 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::060623762260:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:aidaikin91/projectx-repo:ref:refs/heads/main",
+            "repo:aidaikin91/projectx-repo:ref:refs/heads/feature/*",
+            "repo:aidaikin91/projectx-repo:environment:dev"
+          ]
+        }
+      }
+    }
+  ]
+}

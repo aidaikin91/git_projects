@@ -1,0 +1,34 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: karpenter
+  namespace: karpenter
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: karpenter
+      version: "1.3.3"
+      sourceRef:
+        kind: HelmRepository
+        name: karpenter
+        namespace: flux-system
+  values:
+    serviceAccount:
+      create: true
+      name: karpenter
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::060623762260:role/karpenter-controller-projectx_cluster_ubuntu25b
+
+    settings:
+      clusterName: projectx_cluster_ubuntu25b
+      interruptionQueue: karpenter-interruption-projectx_cluster_ubuntu25b
+
+    controller:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1
+          memory: 1Gi
