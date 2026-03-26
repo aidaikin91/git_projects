@@ -35,10 +35,15 @@ data "aws_iam_policy_document" "karpenter_controller_policy" {
       "ec2:TerminateInstances",
       "ec2:Describe*",
       "ec2:CreateTags",
+      "ec2:CreateFleet",
+      "ec2:CreateLaunchTemplate",
+      "ec2:DeleteLaunchTemplate",
       "iam:PassRole",
+      "iam:CreateServiceLinkedRole",
       "ssm:GetParameter",
       "pricing:GetProducts",
-      "sqs:*"
+      "sqs:*",
+      "eks:DescribeCluster"
     ]
     resources = ["*"]
   }
