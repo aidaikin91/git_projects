@@ -50,5 +50,5 @@ module "karpenter" {
   enable_karpenter = var.enable_karpenter
 
   oidc_provider_arn = module.eks-module.oidc_provider_arn
-  oidc_provider_url = module.eks-module.oidc_provider_arn
+  oidc_provider_url = replace(module.eks-module.cluster_oidc_issuer, "https://", "")
 }
