@@ -18,7 +18,7 @@ spec:
       create: true
       name: karpenter
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::060623762260:role/karpenter-controller-projectx_cluster_ubuntu25b
+        eks.amazonaws.com/role-arn: arn:aws:iam::665832051028:role/karpenter-controller-projectx_cluster_ubuntu25b
 
     settings:
       clusterName: projectx_cluster_ubuntu25b
